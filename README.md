@@ -16,7 +16,7 @@ cruftar test
 You need `cruftc`, a C compiler (`gcc` or `clang`), and the Cruft standard library. From this repository:
 
 ```powershell
-$env:CRUFTC = "C:\Users\kayab\Projects\code\Cruft\build\cruftc.exe"
+$env:CRUFTC = "C:\path\to\cruft\Cruft\build\cruftc.exe"
 .\build.ps1
 .\bin\cruftar.exe help
 ```
