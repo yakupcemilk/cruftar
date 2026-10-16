@@ -63,14 +63,20 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           $toolchain = $env:CRUFT_TOOLCHAIN
-          Write-Host "gcc: $(Join-Path $toolchain 'gcc.exe')"
+          # WinLibs ships CMake 3.27.1. That version writes the compiler path
+          # into CMakeCCompiler.cmake and then fails to parse backslashes
+          # ("Invalid character escape '\M'"). Forward slashes avoid that.
+          $gcc = (Join-Path $toolchain "gcc.exe") -replace '\\', '/'
+          $gxx = (Join-Path $toolchain "g++.exe") -replace '\\', '/'
+          $make = (Join-Path $toolchain "mingw32-make.exe") -replace '\\', '/'
+          Write-Host "gcc: $gcc"
           & (Join-Path $toolchain "gcc.exe") --version
           & (Join-Path $toolchain "llvm-config.exe") --version
           cmake -S compiler -B compiler\build -G "MinGW Makefiles" `
             -DCMAKE_BUILD_TYPE=Release `
-            "-DCMAKE_C_COMPILER=$(Join-Path $toolchain 'gcc.exe')" `
-            "-DCMAKE_CXX_COMPILER=$(Join-Path $toolchain 'g++.exe')" `
-            "-DCMAKE_MAKE_PROGRAM=$(Join-Path $toolchain 'mingw32-make.exe')" `
+            "-DCMAKE_C_COMPILER=$gcc" `
+            "-DCMAKE_CXX_COMPILER=$gxx" `
+            "-DCMAKE_MAKE_PROGRAM=$make" `
             -DCRUFT_BUILD_TESTS=OFF
           cmake --build compiler\build --parallel
           if (-not (Test-Path compiler\build\cruftc.exe)) {

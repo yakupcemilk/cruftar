@@ -1,6 +1,6 @@
 # cruftar
 
-`cruftar` is the package manager and project CLI for the Cruft systems language. It is written in Cruft. The command is **`cruftar`**. `cruftc` is the compiler this tool invokes; it is not this program.
+`cruftar` is the package manager and project CLI for the Cruft systems language. It is written in Cruft. The command is **`cruftar`**. `cruftc` is the compiler this tool invokes; it is not this program. (A)
 
 ```powershell
 cruftar new demo --template pure-cruft --target cli
