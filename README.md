@@ -11,6 +11,34 @@ cruftar run
 cruftar test
 ```
 
+## Installation
+
+A Windows release contains `cruftar.exe`, `cruftc.exe`, the Cruft standard library, and the compiler runtime (`arena.c`, `mem.c`, `fs.c`, `io.c`), plus the LLVM libraries `cruftc` links. Linking a program uses `gcc` or `clang` from `PATH`.
+
+### PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/yakupcemilk/cruftar/main/install.ps1 | iex
+```
+
+The script downloads the latest GitHub release, extracts it to `%USERPROFILE%\.cruft`, and appends `%USERPROFILE%\.cruft\bin` to the user `PATH`. Open a new terminal and run `cruftar help`.
+
+### Manual download
+
+Download `cruftar-v*-windows-x64.zip` from the [releases page](https://github.com/yakupcemilk/cruftar/releases). Extract it so this tree exists:
+
+```text
+%USERPROFILE%\.cruft\
+  bin\cruftar.exe
+  bin\cruftc.exe
+  std\mem.cruft
+  src\runtime\
+```
+
+Add `%USERPROFILE%\.cruft\bin` to the user `PATH`. `cruftar` finds `cruftc.exe` there. `std` and `src\runtime` sit next to `bin`, which is where this tool looks for them.
+
+Pushing a `v*` tag builds that archive and publishes the release.
+
 ## Build cruftar
 
 You need `cruftc`, a C compiler (`gcc` or `clang`), and the Cruft standard library. From this repository:

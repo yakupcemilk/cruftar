@@ -10,3 +10,4 @@ tmp/
 *.exe
 .DS_Store
 *.ps1
+!install.ps1

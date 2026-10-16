@@ -1,0 +1,250 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CRUFT_REPOSITORY: yakupcemilk/Cruft
+  CRUFT_REF: main
+  WINLIBS_URL: https://github.com/brechtsanders/winlibs_mingw/releases/download/13.2.0-16.0.6-11.0.0-ucrt-r1/winlibs-x86_64-posix-seh-gcc-13.2.0-llvm-16.0.6-mingw-w64ucrt-11.0.0-r1.zip
+  WINLIBS_SHA256: 032a8a30fb8c5fbf882115fd851ed73f0fb0721d8fc556657cdd5cd9b22cd37d
+
+jobs:
+  windows:
+    name: Windows release
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout cruftar
+        uses: actions/checkout@v4
+
+      - name: Checkout cruftc
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRUFT_REPOSITORY }}
+          ref: ${{ env.CRUFT_REF }}
+          path: compiler
+          fetch-depth: 1
+
+      - name: Install the MinGW and LLVM 16 toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dest = "C:\winlibs"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $zip = Join-Path $dest "winlibs.zip"
+          curl.exe -fsSL --retry 5 --retry-delay 2 -o $zip $env:WINLIBS_URL
+          if ($LASTEXITCODE -ne 0) { throw "WinLibs download failed ($LASTEXITCODE)" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          if ($hash -ne $env:WINLIBS_SHA256) {
+            throw "WinLibs checksum mismatch: $hash"
+          }
+          tar.exe -xf $zip -C $dest
+          if ($LASTEXITCODE -ne 0) { throw "WinLibs extract failed ($LASTEXITCODE)" }
+          $gcc = @(
+            "C:\winlibs\mingw64\bin\gcc.exe",
+            "C:\winlibs\bin\gcc.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $gcc) { throw "gcc.exe was not found in the WinLibs archive" }
+          $toolchain = Split-Path $gcc -Parent
+          Add-Content -Path $env:GITHUB_PATH -Value $toolchain
+          Add-Content -Path $env:GITHUB_ENV -Value "CRUFT_TOOLCHAIN=$toolchain"
+          Write-Host "Toolchain: $toolchain"
+
+      - name: Build cruftc
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $toolchain = $env:CRUFT_TOOLCHAIN
+          Write-Host "gcc: $(Join-Path $toolchain 'gcc.exe')"
+          & (Join-Path $toolchain "gcc.exe") --version
+          & (Join-Path $toolchain "llvm-config.exe") --version
+          cmake -S compiler -B compiler\build -G "MinGW Makefiles" `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_C_COMPILER=$(Join-Path $toolchain 'gcc.exe')" `
+            "-DCMAKE_CXX_COMPILER=$(Join-Path $toolchain 'g++.exe')" `
+            "-DCMAKE_MAKE_PROGRAM=$(Join-Path $toolchain 'mingw32-make.exe')" `
+            -DCRUFT_BUILD_TESTS=OFF
+          cmake --build compiler\build --parallel
+          if (-not (Test-Path compiler\build\cruftc.exe)) {
+            throw "cruftc.exe was not produced"
+          }
+
+      - name: Build cruftar
+        shell: pwsh
+        env:
+          CRUFTC: ${{ github.workspace }}\compiler\build\cruftc.exe
+          CRUFT_STD: ${{ github.workspace }}\compiler\std
+          CRUFT_RUNTIME: ${{ github.workspace }}\compiler\src\runtime
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          if (-not (Test-Path -LiteralPath $env:CRUFTC)) { throw "cruftc was not found at $env:CRUFTC" }
+          New-Item -ItemType Directory -Force -Path build, bin | Out-Null
+          $sources = @(
+            "src\main.cruft",
+            "src\host.cruft",
+            "src\cli.cruft",
+            "src\ui.cruft",
+            "src\manifest.cruft",
+            "src\build.cruft",
+            "src\templates.cruft"
+          )
+          & $env:CRUFTC -c -O1 -o "build\cruftar.o" --lib $env:CRUFT_STD @sources
+          if ($LASTEXITCODE -ne 0) { throw "cruftc failed ($LASTEXITCODE)" }
+          $link = @(
+            "build\cruftar.o",
+            "src\runtime\host.c",
+            (Join-Path $env:CRUFT_RUNTIME "mem.c"),
+            (Join-Path $env:CRUFT_RUNTIME "fs.c"),
+            (Join-Path $env:CRUFT_RUNTIME "io.c"),
+            "-o", "bin\cruftar.exe",
+            "-lshell32"
+          )
+          gcc -O1 @link
+          if ($LASTEXITCODE -ne 0) { throw "link failed ($LASTEXITCODE)" }
+          if (-not (Test-Path bin\cruftar.exe)) { throw "cruftar.exe was not produced" }
+
+      - name: Package the Windows archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $tag = $env:GITHUB_REF_NAME
+          $stage = Join-Path $pwd "dist\stage"
+          $bin = Join-Path $stage "bin"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force -Path $bin, (Join-Path $stage "std"), (Join-Path $stage "src\runtime") | Out-Null
+
+          Copy-Item bin\cruftar.exe (Join-Path $bin "cruftar.exe")
+          Copy-Item compiler\build\cruftc.exe (Join-Path $bin "cruftc.exe")
+          Copy-Item LICENSE (Join-Path $stage "LICENSE.txt")
+          Copy-Item compiler\std\* (Join-Path $stage "std") -Recurse -Force
+          Copy-Item compiler\src\runtime\* (Join-Path $stage "src\runtime") -Recurse -Force
+
+          # cruftc links LLVM dynamically. Ship those DLLs beside the executable.
+          $toolchain = $env:CRUFT_TOOLCHAIN
+          $objdump = Join-Path $toolchain "objdump.exe"
+          $copied = @{}
+          $queue = New-Object System.Collections.Generic.Queue[string]
+          $queue.Enqueue((Resolve-Path (Join-Path $bin "cruftc.exe")).Path)
+          Get-ChildItem -Path $toolchain -Filter "libLLVM*.dll" | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $bin $_.Name) -Force
+            if (-not $copied.ContainsKey($_.Name)) {
+              $copied[$_.Name] = $true
+              $queue.Enqueue((Join-Path $bin $_.Name))
+            }
+          }
+          while ($queue.Count -gt 0) {
+            $current = $queue.Dequeue()
+            $dump = @(& $objdump -p $current)
+            if ($LASTEXITCODE -ne 0) { throw "objdump failed for $current" }
+            foreach ($line in $dump) {
+              if ($line -notmatch "DLL Name:\s+(\S+)") { continue }
+              $name = $Matches[1]
+              if ($copied.ContainsKey($name)) { continue }
+              $src = Join-Path $toolchain $name
+              if (-not (Test-Path -LiteralPath $src)) { continue }
+              Copy-Item -LiteralPath $src -Destination (Join-Path $bin $name) -Force
+              $copied[$name] = $true
+              $queue.Enqueue((Join-Path $bin $name))
+            }
+          }
+
+          $system = @("kernel32.dll", "ucrtbase.dll", "shell32.dll")
+          $imports = @(& $objdump -p (Join-Path $bin "cruftc.exe"))
+          foreach ($line in $imports) {
+            if ($line -notmatch "DLL Name:\s+(\S+)") { continue }
+            $name = $Matches[1]
+            if ($system -contains $name.ToLowerInvariant()) { continue }
+            if (-not (Test-Path -LiteralPath (Join-Path $bin $name))) {
+              throw "Packaged cruftc.exe is missing runtime DLL $name"
+            }
+          }
+          foreach ($rel in @(
+            "bin\cruftar.exe",
+            "bin\cruftc.exe",
+            "std\mem.cruft",
+            "src\runtime\mem.c",
+            "src\runtime\fs.c",
+            "src\runtime\io.c",
+            "src\runtime\arena.c"
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $stage $rel))) {
+              throw "Package is missing $rel"
+            }
+          }
+
+          $zip = Join-Path $pwd "dist\cruftar-$tag-windows-x64.zip"
+          if (Test-Path $zip) { Remove-Item -Force $zip }
+          tar.exe -a -cf $zip -C $stage .
+          if ($LASTEXITCODE -ne 0) { throw "zip failed ($LASTEXITCODE)" }
+          Write-Host "Packed $zip ($($copied.Count) runtime DLLs)"
+
+          # Prove the archive runs without the build toolchain on PATH.
+          $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
+          $env:Path = "$bin;$machine"
+          foreach ($name in @("CRUFTC", "CRUFT_STD", "CRUFT_RUNTIME", "CC")) {
+            Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+          }
+          & (Join-Path $bin "cruftc.exe") --help
+          if ($LASTEXITCODE -ne 0) { throw "cruftc --help failed" }
+          @'
+          package app
+          import io
+          pub fn main(): i32
+              ret 0
+          end
+          '@ | Set-Content -Encoding ascii (Join-Path $pwd "dist\smoke.cruft")
+          & (Join-Path $bin "cruftc.exe") --check --lib (Join-Path $stage "std") (Join-Path $pwd "dist\smoke.cruft")
+          if ($LASTEXITCODE -ne 0) { throw "cruftc could not load the packaged standard library" }
+          & (Join-Path $bin "cruftar.exe") help
+          if ($LASTEXITCODE -ne 0) { throw "cruftar help failed" }
+          & (Join-Path $bin "cruftar.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "cruftar --version failed" }
+          & (Join-Path $bin "cruftar.exe") check
+          if ($LASTEXITCODE -ne 0) { throw "cruftar check failed against the packaged compiler" }
+
+      - name: Publish the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $tag = $env:GITHUB_REF_NAME
+          $zip = Join-Path $pwd "dist\cruftar-$tag-windows-x64.zip"
+          if (-not (Test-Path $zip)) { throw "Archive $zip was not built" }
+          $notes = @'
+          ## Install
+
+          ```powershell
+          irm https://raw.githubusercontent.com/yakupcemilk/cruftar/main/install.ps1 | iex
+          ```
+
+          The Windows archive contains `cruftar.exe`, `cruftc.exe`, the standard library under `std`, the compiler runtime under `src/runtime`, and the LLVM libraries `cruftc` needs. The install script extracts that archive to `%USERPROFILE%\.cruft` and adds `%USERPROFILE%\.cruft\bin` to the user PATH.
+
+          Linking a Cruft program uses `gcc` or `clang` from PATH.
+          '@
+          $notesPath = Join-Path $pwd "dist\notes.md"
+          Set-Content -Path $notesPath -Value $notes -Encoding utf8NoBOM
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $zip --repo $env:GITHUB_REPOSITORY --clobber
+            if ($LASTEXITCODE -ne 0) { throw "gh release upload failed ($LASTEXITCODE)" }
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) { throw "gh release edit failed ($LASTEXITCODE)" }
+          }
+          else {
+            $ghArgs = @("release", "create", $tag, $zip, "--repo", $env:GITHUB_REPOSITORY, "--title", "cruftar $tag", "--notes-file", $notesPath)
+            if ($tag -match "-") { $ghArgs += "--prerelease" }
+            & gh @ghArgs
+            if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)" }
+          }
