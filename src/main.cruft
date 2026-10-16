@@ -1,0 +1,7 @@
+package app
+
+import cli
+
+pub fn main(): i32
+    ret cli.run()
+end

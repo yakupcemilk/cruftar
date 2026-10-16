@@ -1,0 +1,7 @@
+package add_test
+
+import cli
+
+pub fn main(): i32
+    ret cli.self_test_add()
+end

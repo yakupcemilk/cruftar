@@ -1,0 +1,30 @@
+# cruft.toml - cruftar project manifest.
+# cruftc reads name, version, triple, link, modules, and dependency keys.
+# Extra keys are quoted strings. Unknown sections would make cruftc warn.
+
+[package]
+name = "cruftar"
+version = "0.1.0"
+edition = "2026"
+kind = "bin"
+template = "pure-cruft"
+target = "cli"
+entry = "src/main.cruft"
+std = "std"
+opt-level = "2"
+dev-opt-level = "0"
+release-opt-level = "2"
+
+[target]
+triple = ""
+
+[link]
+libraries = ["shell32"]
+search_paths = []
+
+[modules]
+paths = ["src"]
+
+[dependencies]
+io = "std"
+fs = "std"

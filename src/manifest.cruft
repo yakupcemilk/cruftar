@@ -1,0 +1,406 @@
+package cli
+
+import host
+import fs
+import io
+
+pub fn clear_manifest()
+    var i: i32 = 7
+    while i <= 20 do
+        host.host_slot_clear(i)
+        i = i + 1
+    end
+    host.host_list_clear(L_LIBS)
+    host.host_list_clear(L_SEARCH)
+    host.host_list_clear(L_MODULES)
+    host.host_list_clear(L_DEP_NAME)
+    host.host_list_clear(L_DEP_SRC)
+end
+
+pub fn load_project(): i32
+    host.host_join_cstr(S_ROOT, "cruft.toml".data(), S_PATH)
+    if host.host_is_file(host.host_slot_ptr(S_PATH)) == 0 then
+        say_fixed("cruft.toml was not found. Run cruftar init or cruftar new first")
+        ret 1
+    end
+    if load_manifest_slot(S_PATH) != 0 then
+        say_fixed("cannot read cruft.toml")
+        ret 1
+    end
+    if host.host_slot_len(S_NAME) == 0 then
+        ret error_empty_name()
+    end
+    ret 0
+end
+
+pub fn load_manifest_slot(slot: i32): i32
+    var path: String = host.slot_string(slot)
+    var text: String = fs.read_to_string(path)
+    if text.byte_len() == 0 and host.host_is_file(host.host_slot_ptr(slot)) == 0 then
+        ret 1
+    end
+    clear_manifest()
+    var section: i32 = 0
+    var n: i64 = text.byte_len()
+    var i: i64 = 0
+    while i < n do
+        var nl: i64 = host.host_find_byte(text.data(), n, i, 10)
+        var line_n: i64 = 0
+        var next: i64 = 0
+        if nl < 0 then
+            line_n = n - i
+            next = n
+        else
+            line_n = nl - i
+            next = nl + 1
+        end
+        section = scan_line(host.host_ptr_add(text.data(), i), line_n, section)
+        i = next
+    end
+    apply_defaults()
+    ret 0
+end
+
+pub fn scan_line(p: ptr, n: i64, section: i32): i32
+    var kind: i32 = host.host_split_eq(p, n, S_KEY, S_VALUE)
+    if kind == 0 then
+        ret section
+    end
+    if host.host_slot_byte(S_KEY, 0) == 35 then
+        ret section
+    end
+    if kind == 2 then
+        ret section_name()
+    end
+    apply_key(section)
+    ret section
+end
+
+pub fn section_name(): i32
+    if host.host_slot_eq(S_KEY, "[package]".data()) != 0 then
+        ret 1
+    end
+    if host.host_slot_eq(S_KEY, "[target]".data()) != 0 then
+        ret 2
+    end
+    if host.host_slot_eq(S_KEY, "[link]".data()) != 0 then
+        ret 3
+    end
+    if host.host_slot_eq(S_KEY, "[modules]".data()) != 0 then
+        ret 4
+    end
+    if host.host_slot_eq(S_KEY, "[dependencies]".data()) != 0 then
+        ret 5
+    end
+    ret 0
+end
+
+pub fn apply_key(section: i32)
+    if section == 1 then
+        take_pkg()
+    end
+    if section == 2 then
+        if host.host_slot_eq(S_KEY, "triple".data()) != 0 then
+            host.host_unquote_slot(S_VALUE, S_TRIPLE)
+        end
+    end
+    if section == 3 then
+        if host.host_slot_eq(S_KEY, "libraries".data()) != 0 then
+            host.host_list_clear(L_LIBS)
+            fill_array(L_LIBS)
+        end
+        if host.host_slot_eq(S_KEY, "search_paths".data()) != 0 then
+            host.host_list_clear(L_SEARCH)
+            fill_array(L_SEARCH)
+        end
+    end
+    if section == 4 then
+        if host.host_slot_eq(S_KEY, "paths".data()) != 0 then
+            host.host_list_clear(L_MODULES)
+            fill_array(L_MODULES)
+        end
+    end
+    if section == 5 then
+        if host.host_unquote_slot(S_VALUE, S_TEMP) != 0 then
+            host.host_list_add(L_DEP_NAME, host.host_slot_ptr(S_KEY), host.host_slot_len(S_KEY))
+            host.host_list_add(L_DEP_SRC, host.host_slot_ptr(S_TEMP), host.host_slot_len(S_TEMP))
+        end
+    end
+end
+
+pub fn take_pkg()
+    if host.host_slot_eq(S_KEY, "name".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_NAME)
+    end
+    if host.host_slot_eq(S_KEY, "version".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_VERSION)
+    end
+    if host.host_slot_eq(S_KEY, "edition".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_EDITION)
+    end
+    if host.host_slot_eq(S_KEY, "kind".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_KIND)
+    end
+    if host.host_slot_eq(S_KEY, "template".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_TEMPLATE)
+    end
+    if host.host_slot_eq(S_KEY, "target".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_TARGET)
+    end
+    if host.host_slot_eq(S_KEY, "entry".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_ENTRY)
+    end
+    if host.host_slot_eq(S_KEY, "std".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_STDFIELD)
+    end
+    if host.host_slot_eq(S_KEY, "opt-level".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_OPT)
+    end
+    if host.host_slot_eq(S_KEY, "dev-opt-level".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_DEVOPT)
+    end
+    if host.host_slot_eq(S_KEY, "release-opt-level".data()) != 0 then
+        host.host_unquote_slot(S_VALUE, S_RELOPT)
+    end
+end
+
+pub fn fill_array(list: i32)
+    var p: ptr = host.host_slot_ptr(S_VALUE)
+    var n: i64 = host.host_slot_len(S_VALUE)
+    var i: i64 = 0
+    while i < n do
+        var b: i32 = host.host_byte(p, n, i)
+        if b == 34 then
+            var j: i64 = i + 1
+            var closed: i32 = 0
+            while j < n and closed == 0 do
+                var c: i32 = host.host_byte(p, n, j)
+                if c == 34 then
+                    var start: i64 = i + 1
+                    var count: i64 = j - start
+                    host.host_list_add(list, host.host_ptr_add(p, start), count)
+                    i = j
+                    closed = 1
+                end
+                j = j + 1
+            end
+        end
+        i = i + 1
+    end
+end
+
+pub fn apply_defaults()
+    if host.host_slot_len(S_VERSION) == 0 then
+        host.host_slot_set_cstr(S_VERSION, "0.1.0".data())
+    end
+    if host.host_slot_len(S_EDITION) == 0 then
+        host.host_slot_set_cstr(S_EDITION, "2026".data())
+    end
+    if host.host_slot_len(S_KIND) == 0 then
+        host.host_slot_set_cstr(S_KIND, "bin".data())
+    end
+    if host.host_slot_len(S_TEMPLATE) == 0 then
+        host.host_slot_set_cstr(S_TEMPLATE, "pure-cruft".data())
+    end
+    if host.host_slot_len(S_TARGET) == 0 then
+        host.host_slot_set_cstr(S_TARGET, "cli".data())
+    end
+    if host.host_slot_len(S_ENTRY) == 0 then
+        if host.host_slot_eq(S_KIND, "lib".data()) != 0 then
+            host.host_slot_set_cstr(S_ENTRY, "src/lib.cruft".data())
+        else
+            host.host_slot_set_cstr(S_ENTRY, "src/main.cruft".data())
+        end
+    end
+    if host.host_slot_len(S_STDFIELD) == 0 then
+        host.host_slot_set_cstr(S_STDFIELD, "std".data())
+    end
+    if host.host_slot_len(S_OPT) == 0 then
+        host.host_slot_set_cstr(S_OPT, "2".data())
+    end
+    if host.host_slot_len(S_DEVOPT) == 0 then
+        host.host_slot_set_cstr(S_DEVOPT, "0".data())
+    end
+    if host.host_slot_len(S_RELOPT) == 0 then
+        host.host_slot_set_cstr(S_RELOPT, "2".data())
+    end
+    if host.host_list_count(L_MODULES) == 0 then
+        host.host_list_add(L_MODULES, "src".data(), 3)
+    end
+    host.host_make_ident(host.host_slot_ptr(S_NAME), host.host_slot_len(S_NAME), S_IDENT)
+end
+
+pub fn prepare_new(template: i32, target: i32)
+    host.host_slot_copy(S_TEMP, S_NAME)
+    clear_manifest()
+    host.host_slot_copy(S_NAME, S_TEMP)
+    host.host_slot_set_cstr(S_VERSION, "0.1.0".data())
+    host.host_slot_set_cstr(S_EDITION, "2026".data())
+    host.host_slot_set_cstr(S_STDFIELD, "std".data())
+    host.host_slot_set_cstr(S_OPT, "2".data())
+    host.host_slot_set_cstr(S_DEVOPT, "0".data())
+    host.host_slot_set_cstr(S_RELOPT, "2".data())
+    host.host_list_add(L_MODULES, "src".data(), 3)
+    if target == 2 then
+        host.host_slot_set_cstr(S_KIND, "lib".data())
+        host.host_slot_set_cstr(S_ENTRY, "src/lib.cruft".data())
+        host.host_slot_set_cstr(S_TARGET, "lib".data())
+    else
+        host.host_slot_set_cstr(S_KIND, "bin".data())
+        host.host_slot_set_cstr(S_ENTRY, "src/main.cruft".data())
+    end
+    if target == 1 then
+        host.host_slot_set_cstr(S_TARGET, "cli".data())
+    end
+    if target == 3 then
+        host.host_slot_set_cstr(S_TARGET, "gui".data())
+    end
+    if target == 4 then
+        host.host_slot_set_cstr(S_TARGET, "wasm".data())
+        host.host_slot_set_cstr(S_TRIPLE, "wasm32-unknown-unknown".data())
+    end
+    if template == 1 then
+        host.host_slot_set_cstr(S_TEMPLATE, "pure-cruft".data())
+    end
+    if template == 2 then
+        host.host_slot_set_cstr(S_TEMPLATE, "cruft-with-c".data())
+        host.host_list_add(L_SEARCH, "src/runtime".data(), 11)
+    end
+    if template == 3 then
+        host.host_slot_set_cstr(S_TEMPLATE, "cruft-with-rust".data())
+        host.host_list_add(L_SEARCH, "rust/target/release".data(), 19)
+        host.host_list_add(L_LIBS, "cruft_bridge".data(), 12)
+    end
+    if template == 2 and target == 1 then
+        host.host_list_add(L_LIBS, "shell32".data(), 7)
+    end
+    if target == 1 or (template == 1 and target == 3) then
+        host.host_list_add(L_DEP_NAME, "io".data(), 2)
+        host.host_list_add(L_DEP_SRC, "std".data(), 3)
+    end
+    host.host_make_ident(host.host_slot_ptr(S_NAME), host.host_slot_len(S_NAME), S_IDENT)
+end
+
+pub fn render_manifest()
+    host.host_buf_clear()
+    host.host_buf_puts("# cruft.toml - cruftar project manifest.\n".data())
+    host.host_buf_puts("# cruftc reads name, version, triple, link, modules, and dependency keys.\n".data())
+    host.host_buf_puts("# Extra keys are quoted strings. Unknown sections would make cruftc warn.\n".data())
+    host.host_buf_puts("\n[package]\n".data())
+    put_key("name".data(), S_NAME)
+    put_key("version".data(), S_VERSION)
+    put_key("edition".data(), S_EDITION)
+    put_key("kind".data(), S_KIND)
+    put_key("template".data(), S_TEMPLATE)
+    put_key("target".data(), S_TARGET)
+    put_key("entry".data(), S_ENTRY)
+    put_key("std".data(), S_STDFIELD)
+    put_key("opt-level".data(), S_OPT)
+    put_key("dev-opt-level".data(), S_DEVOPT)
+    put_key("release-opt-level".data(), S_RELOPT)
+    host.host_buf_puts("\n[target]\n".data())
+    put_key("triple".data(), S_TRIPLE)
+    host.host_buf_puts("\n[link]\n".data())
+    host.host_buf_puts("libraries = ".data())
+    put_list(L_LIBS)
+    host.host_buf_puts("\nsearch_paths = ".data())
+    put_list(L_SEARCH)
+    host.host_buf_puts("\n\n[modules]\npaths = ".data())
+    put_list(L_MODULES)
+    host.host_buf_puts("\n\n[dependencies]\n".data())
+    var deps: i32 = host.host_list_count(L_DEP_NAME)
+    if deps == 0 then
+        host.host_buf_puts("# package = \"std\"\n".data())
+    else
+        var d: i32 = 0
+        while d < deps do
+            put_dep(d)
+            d = d + 1
+        end
+    end
+end
+
+pub fn put_key(label: ptr, slot: i32)
+    host.host_buf_puts(label)
+    host.host_buf_puts(" = ".data())
+    host.host_buf_put_quoted(host.host_slot_ptr(slot), host.host_slot_len(slot))
+    host.host_buf_puts("\n".data())
+end
+
+pub fn put_list(id: i32)
+    host.host_buf_puts("[".data())
+    var n: i32 = host.host_list_count(id)
+    var i: i32 = 0
+    while i < n do
+        put_list_item(id, i, n)
+        i = i + 1
+    end
+    host.host_buf_puts("]".data())
+end
+
+pub fn put_list_item(id: i32, i: i32, n: i32)
+    host.host_buf_put_quoted(host.host_list_ptr(id, i), host.host_list_len(id, i))
+    var next: i32 = i + 1
+    if next < n then
+        host.host_buf_puts(", ".data())
+    end
+end
+
+pub fn put_dep(i: i32)
+    host.host_buf_put(host.host_list_ptr(L_DEP_NAME, i), host.host_list_len(L_DEP_NAME, i))
+    host.host_buf_puts(" = ".data())
+    host.host_buf_put_quoted(host.host_list_ptr(L_DEP_SRC, i), host.host_list_len(L_DEP_SRC, i))
+    host.host_buf_puts("\n".data())
+end
+
+pub fn write_manifest_slot(slot: i32): i32
+    render_manifest()
+    var body: String = host.take()
+    var path: String = host.slot_string(slot)
+    if not fs.write_file(path, body) then
+        ret 1
+    end
+    ret 0
+end
+
+pub fn self_test_add(): i32
+    host.host_getcwd(S_SAVED)
+    host.host_join_cstr(S_SAVED, "tmp/add-self".data(), S_ROOT)
+    host.host_remove_tree(host.host_slot_ptr(S_ROOT))
+    if host.host_mkdirs(host.host_slot_ptr(S_ROOT)) == 0 then
+        ret 1
+    end
+    host.host_slot_set_cstr(S_NAME, "demo".data())
+    prepare_new(1, 2)
+    host.host_join_cstr(S_ROOT, "cruft.toml".data(), S_PATH)
+    if write_manifest_slot(S_PATH) != 0 then
+        ret 1
+    end
+    if apply_token("std/io".data(), 6) != 0 then
+        ret 1
+    end
+    if apply_token("std/io".data(), 6) != 0 then
+        ret 1
+    end
+    if apply_token("c:raylib".data(), 8) != 0 then
+        ret 1
+    end
+    if apply_token("c:raylib".data(), 8) != 0 then
+        ret 1
+    end
+    if write_manifest_slot(S_PATH) != 0 then
+        ret 1
+    end
+    var path: String = host.slot_string(S_PATH)
+    var text: String = fs.read_to_string(path)
+    if host.host_count(text.data(), text.byte_len(), "io = ".data()) != 1 then
+        ret 1
+    end
+    if host.host_count(text.data(), text.byte_len(), "raylib".data()) != 1 then
+        ret 1
+    end
+    if host.host_contains(text.data(), text.byte_len(), "name = \"demo\"".data()) == 0 then
+        ret 1
+    end
+    ret 0
+end

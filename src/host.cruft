@@ -1,0 +1,125 @@
+package host
+
+// Thin wrappers over src/runtime/host.c. String values are built here so the
+// rest of cruftar can stay in Cruft and still call std/fs and std/io.
+
+pub extern fn host_init()
+pub extern fn host_is_tty(): i32
+pub extern fn host_color(): i32
+pub extern fn host_argc(): i32
+pub extern fn host_argv(index: i32): ptr
+pub extern fn host_argv_len(index: i32): i64
+pub extern fn host_streq(data: ptr, n: i64, lit: ptr): i32
+pub extern fn host_starts(data: ptr, n: i64, lit: ptr): i32
+pub extern fn host_ends(data: ptr, n: i64, lit: ptr): i32
+pub extern fn host_contains(data: ptr, n: i64, lit: ptr): i32
+pub extern fn host_has_entry(data: ptr, n: i64): i32
+pub extern fn host_count(data: ptr, n: i64, lit: ptr): i32
+pub extern fn host_byte(data: ptr, n: i64, i: i64): i32
+pub extern fn host_find_byte(data: ptr, n: i64, from: i64, byte: i32): i64
+pub extern fn host_ptr_add(p: ptr, n: i64): ptr
+pub extern fn host_memcpy(dst: ptr, src: ptr, n: i64)
+pub extern fn host_buf_clear()
+pub extern fn host_buf_puts(s: ptr)
+pub extern fn host_buf_put(s: ptr, n: i64)
+pub extern fn host_buf_putc(c: i32)
+pub extern fn host_buf_put_i64(v: i64)
+pub extern fn host_buf_put_i32(v: i32)
+pub extern fn host_buf_put_size(bytes: i64)
+pub extern fn host_buf_bar(done: i32, total: i32)
+pub extern fn host_buf_put_quoted(s: ptr, n: i64)
+pub extern fn host_buf_mark(on: i32)
+pub extern fn host_buf_puts_slot(slot: i32)
+pub extern fn host_buf_len(): i64
+pub extern fn host_buf_ptr(): ptr
+pub extern fn host_buf_contains(lit: ptr): i32
+pub extern fn host_slot_set(slot: i32, s: ptr, n: i64): i32
+pub extern fn host_slot_set_cstr(slot: i32, s: ptr): i32
+pub extern fn host_slot_clear(slot: i32)
+pub extern fn host_slot_ptr(slot: i32): ptr
+pub extern fn host_slot_len(slot: i32): i64
+pub extern fn host_slot_eq(slot: i32, lit: ptr): i32
+pub extern fn host_slot_copy(dst: i32, src: i32)
+pub extern fn host_slot_i32(slot: i32, fallback: i32): i32
+pub extern fn host_slot_byte(slot: i32, i: i64): i32
+pub extern fn host_join_cstr(base: i32, rel: ptr, dest: i32): i32
+pub extern fn host_slot_parent(slot: i32): i32
+pub extern fn host_basename_to(s: ptr, n: i64, slot: i32)
+pub extern fn host_dirname_to(s: ptr, n: i64, slot: i32)
+pub extern fn host_make_ident(s: ptr, n: i64, slot: i32): i32
+pub extern fn host_slot_concat(src: i32, suffix: ptr, dest: i32)
+pub extern fn host_list_clear(id: i32)
+pub extern fn host_list_add(id: i32, s: ptr, n: i64): i32
+pub extern fn host_list_count(id: i32): i32
+pub extern fn host_list_ptr(id: i32, index: i32): ptr
+pub extern fn host_list_len(id: i32, index: i32): i64
+pub extern fn host_list_index(id: i32, s: ptr, n: i64): i32
+pub extern fn host_list_set(id: i32, index: i32, s: ptr, n: i64)
+pub extern fn host_list_has_basename(id: i32, base: ptr): i32
+pub extern fn host_getenv(name: ptr, slot: i32): i32
+pub extern fn host_which(name: ptr, slot: i32): i32
+pub extern fn host_getcwd(slot: i32): i32
+pub extern fn host_exe_dir(slot: i32): i32
+pub extern fn host_exists(path: ptr): i32
+pub extern fn host_is_file(path: ptr): i32
+pub extern fn host_is_dir(path: ptr): i32
+pub extern fn host_mkdirs(path: ptr): i32
+pub extern fn host_dir_state(path: ptr): i32
+pub extern fn host_remove_tree(path: ptr): i32
+pub extern fn host_delete_artifacts(root: ptr): i32
+pub extern fn host_list_dir(dir: ptr, list: i32): i32
+pub extern fn host_walk_suffix(dir: ptr, suffix: ptr, list: i32): i32
+pub extern fn host_file_size(path: ptr): i64
+pub extern fn host_host_triple(): ptr
+pub extern fn host_exe_suffix(): ptr
+pub extern fn host_tick()
+pub extern fn host_tock(): i64
+pub extern fn host_valid_name(s: ptr, n: i64): i32
+pub extern fn host_valid_ident(s: ptr, n: i64): i32
+pub extern fn host_valid_lib(s: ptr, n: i64): i32
+pub extern fn host_unquote_slot(src: i32, dest: i32): i32
+pub extern fn host_split_eq(p: ptr, n: i64, key_slot: i32, value_slot: i32): i32
+pub extern fn host_stem(path: ptr, n: i64, slot: i32)
+pub extern fn host_strip_lib_name(slot: i32)
+pub extern fn host_cmd_begin()
+pub extern fn host_cmd_arg(s: ptr, n: i64)
+pub extern fn host_cmd_arg_cstr(s: ptr)
+pub extern fn host_cmd_arg_slot(slot: i32)
+pub extern fn host_cmd_cwd_slot(slot: i32)
+pub extern fn host_cmd_run(capture: i32): i32
+pub extern fn host_captured_ptr(): ptr
+pub extern fn host_captured_len(): i64
+pub extern fn host_flush()
+pub extern fn host_spin_start(msg: ptr)
+pub extern fn host_spin_stop()
+pub extern fn host_read_key(): i32
+pub extern fn host_cursor_up(lines: i32)
+
+pub fn eq(data: ptr, n: i64, lit: str): i32
+    ret host_streq(data, n, lit.data())
+end
+
+pub fn copy_ptr(p: ptr, n: i64): String
+    var s: String = alloc_string(n)
+    if n > 0 and s.data() != null() then
+        host_memcpy(s.data(), p, n)
+        s.set_len(n)
+    end
+    ret s
+end
+
+pub fn take(): String
+    ret copy_ptr(host_buf_ptr(), host_buf_len())
+end
+
+pub fn arg(index: i32): String
+    ret copy_ptr(host_argv(index), host_argv_len(index))
+end
+
+pub fn slot_string(slot: i32): String
+    ret copy_ptr(host_slot_ptr(slot), host_slot_len(slot))
+end
+
+pub fn captured_string(): String
+    ret copy_ptr(host_captured_ptr(), host_captured_len())
+end

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tsbuildinfo
+build/
+bin/
+tmp/
+*.o
+*.ll
+*.s
+*.exe
+.DS_Store
+*.ps1

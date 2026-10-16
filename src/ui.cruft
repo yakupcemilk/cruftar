@@ -1,0 +1,335 @@
+package cli
+
+import host
+import io
+
+var g_menu_lines: i32 = 0
+
+pub fn help_text()
+    io.println("cruftar 0.1.0")
+    io.println("package manager and project CLI for the Cruft language")
+    io.println("")
+    io.println("usage: cruftar <command> [options]")
+    io.println("")
+    io.println("Commands:")
+    io.println("  new <name>     Create a project. Arrow keys pick a template on a terminal")
+    io.println("  init           Write cruft.toml here. Refuses to overwrite it unless --force")
+    io.println("  build          Type-check, lower to LLVM IR, optimize, and link with cruftc")
+    io.println("  run            Build, then execute the binary. Extra arguments follow --")
+    io.println("  check          cruftc --check. No object file and no link")
+    io.println("  test           Run every tests/*.cruft program")
+    io.println("  add <pkg>      Record a std module or a link library in cruft.toml")
+    io.println("  clean          Delete build/ and *.ll / *.o files inside the project")
+    io.println("  help           Show this text")
+    io.println("")
+    io.println("Templates (--template): pure-cruft, cruft-with-c, cruft-with-rust")
+    io.println("Targets   (--target):   cli, lib, gui, wasm")
+    io.println("")
+    io.println("Options:")
+    io.println("  --force            Overwrite an existing manifest or a non-empty new directory")
+    io.println("  --release          Build with release-opt-level")
+    io.println("  --cruftc <path>    Compiler binary. Otherwise CRUFTC, PATH, then build/cruftc.exe")
+    io.println("  --lib <name>       add: link library (-l)")
+    io.println("  --search <dir>     add: linker search path (-L)")
+    io.println("")
+    io.println("The command is cruftar. cruftc is the compiler cruftar invokes.")
+    io.println("Example: cruftar new demo --template pure-cruft --target cli")
+end
+
+pub fn say_fixed(msg: str): i32
+    host.host_buf_clear()
+    if host.host_color() != 0 then
+        host.host_buf_puts("\033[1;31merror:\033[0m ".data())
+    else
+        host.host_buf_puts("error: ".data())
+    end
+    host.host_buf_puts(msg.data())
+    host.host_buf_puts("\n".data())
+    io.eprint(host.take())
+    ret 1
+end
+
+pub fn usage_unknown(): i32
+    say_fixed("unknown command. Run cruftar help")
+    ret 2
+end
+
+pub fn usage_extra(): i32
+    say_fixed("unexpected argument")
+    ret 2
+end
+
+pub fn usage_value(): i32
+    say_fixed("option requires a value")
+    ret 2
+end
+
+pub fn usage_new(): i32
+    say_fixed("new requires a project name. usage: cruftar new <name>")
+    ret 2
+end
+
+pub fn usage_name(): i32
+    say_fixed("project name must start with a letter or '_' and use only letters, digits, '_', '-', and '.'")
+    ret 2
+end
+
+pub fn usage_template(): i32
+    say_fixed("--template must be pure-cruft, cruft-with-c, or cruft-with-rust")
+    ret 2
+end
+
+pub fn usage_target(): i32
+    say_fixed("--target must be cli, lib, gui, or wasm")
+    ret 2
+end
+
+pub fn usage_add(): i32
+    say_fixed("add requires a package, --lib, or --search")
+    ret 2
+end
+
+pub fn usage_lib(): i32
+    say_fixed("invalid link name")
+    ret 2
+end
+
+pub fn usage_std(): i32
+    say_fixed("invalid std module. expected std/<name>, for example std/io")
+    ret 2
+end
+
+pub fn usage_pkg(): i32
+    say_fixed("package must be std/<name>, c:<lib>, rust:<lib>, or a library path")
+    ret 2
+end
+
+pub fn note_default(have_template: i32, have_target: i32)
+    host.host_buf_clear()
+    host.host_buf_puts("note: stdin is not a terminal; defaulting to".data())
+    if have_template == 0 then
+        host.host_buf_puts(" --template pure-cruft".data())
+    end
+    if have_target == 0 then
+        host.host_buf_puts(" --target cli".data())
+    end
+    host.host_buf_puts("\n".data())
+    io.eprint(host.take())
+end
+
+pub fn note_created()
+    host.host_buf_clear()
+    host.host_buf_puts("Created ".data())
+    host.host_buf_puts_slot(S_NAME)
+    host.host_buf_puts(" (".data())
+    host.host_buf_puts_slot(S_TEMPLATE)
+    host.host_buf_puts(", ".data())
+    host.host_buf_puts_slot(S_TARGET)
+    host.host_buf_puts(")".data())
+    io.println(host.take())
+end
+
+pub fn format_empty_name()
+    host.host_buf_clear()
+    if host.host_color() != 0 then
+        host.host_buf_puts("\033[1;31merror:\033[0m ".data())
+    else
+        host.host_buf_puts("error: ".data())
+    end
+    host.host_buf_puts("manifest field `package.name` is empty\n".data())
+    host.host_buf_puts("  --> cruft.toml:2:8\n".data())
+    host.host_buf_puts("   |\n".data())
+    host.host_buf_puts(" 2 | name = \"\"\n".data())
+    host.host_buf_puts("   |        ^^ empty string\n".data())
+end
+
+pub fn error_empty_name(): i32
+    format_empty_name()
+    io.eprint(host.take())
+    ret 1
+end
+
+pub fn self_test_diag(): i32
+    format_empty_name()
+    if host.host_buf_contains("error:".data()) == 0 then
+        ret 1
+    end
+    if host.host_buf_contains("-->".data()) == 0 then
+        ret 1
+    end
+    if host.host_buf_contains("^".data()) == 0 then
+        ret 1
+    end
+    if host.host_buf_contains("cruft.toml:2:8".data()) == 0 then
+        ret 1
+    end
+    ret 0
+end
+
+pub fn missing_compiler(): i32
+    host.host_buf_clear()
+    host.host_buf_puts("error: cruftc was not found\n".data())
+    host.host_buf_puts("  looked for --cruftc, the CRUFTC environment variable, PATH,\n".data())
+    host.host_buf_puts("  and build/cruftc.exe under this directory, its parents, and a sibling Cruft directory\n".data())
+    host.host_buf_puts("  set the compiler and rerun:\n".data())
+    host.host_buf_puts("  $env:CRUFTC = \"C:\\Users\\kayab\\Projects\\code\\Cruft\\build\\cruftc.exe\"\n".data())
+    io.eprint(host.take())
+    ret 1
+end
+
+pub fn missing_cc(): i32
+    say_fixed("no C compiler found. Set CC or put gcc or clang on PATH")
+    ret 1
+end
+
+pub fn missing_cargo(): i32
+    host.host_buf_clear()
+    host.host_buf_puts("error: this project links a Rust staticlib (template cruft-with-rust) but cargo was not found\n".data())
+    host.host_buf_puts("install Rust, put cargo on PATH, and rerun the command\n".data())
+    io.eprint(host.take())
+    ret 1
+end
+
+pub fn choose(kind: i32): i32
+    g_menu_lines = 0
+    var sel: i32 = 0
+    var count: i32 = 3
+    if kind == 2 then
+        count = 4
+    end
+    var live: i32 = 1
+    while live == 1 do
+        draw_menu(kind, sel, count)
+        var key: i32 = host.host_read_key()
+        var next: i32 = menu_step(sel, count, key)
+        if next < 0 then
+            g_menu_lines = 0
+            ret -1
+        end
+        if next >= 100 then
+            var chosen: i32 = next - 100
+            g_menu_lines = 0
+            ret chosen
+        end
+        sel = next
+    end
+    ret 0
+end
+
+pub fn draw_menu(kind: i32, sel: i32, count: i32)
+    if g_menu_lines > 0 then
+        host.host_cursor_up(g_menu_lines)
+    end
+    print_title(kind)
+    print_hint(count)
+    var i: i32 = 0
+    while i < count do
+        print_row(kind, i, sel)
+        i = i + 1
+    end
+    g_menu_lines = count + 2
+end
+
+pub fn print_title(kind: i32)
+    if kind == 1 then
+        io.println("Select a template")
+    else
+        io.println("Select a target")
+    end
+end
+
+pub fn print_hint(count: i32)
+    if count == 3 then
+        io.println("arrows, enter, or 1-3. q aborts")
+    else
+        io.println("arrows, enter, or 1-4. q aborts")
+    end
+end
+
+pub fn print_row(kind: i32, index: i32, sel: i32)
+    host.host_buf_clear()
+    if index == sel then
+        host.host_buf_mark(1)
+        host.host_buf_puts("> ".data())
+    else
+        host.host_buf_puts("  ".data())
+    end
+    put_choice(kind, index)
+    host.host_buf_mark(0)
+    io.println(host.take())
+end
+
+pub fn put_choice(kind: i32, index: i32)
+    if kind == 1 and index == 0 then
+        host.host_buf_puts("pure-cruft       zero-dependency Cruft".data())
+    end
+    if kind == 1 and index == 1 then
+        host.host_buf_puts("cruft-with-c     extern fn and src/runtime".data())
+    end
+    if kind == 1 and index == 2 then
+        host.host_buf_puts("cruft-with-rust  Rust staticlib bridge".data())
+    end
+    if kind == 2 and index == 0 then
+        host.host_buf_puts("cli              arguments and std/io streams".data())
+    end
+    if kind == 2 and index == 1 then
+        host.host_buf_puts("lib              pub, pri, and export".data())
+    end
+    if kind == 2 and index == 2 then
+        host.host_buf_puts("gui              text frame or C ABI window scaffold".data())
+    end
+    if kind == 2 and index == 3 then
+        host.host_buf_puts("wasm             wasm32-unknown-unknown".data())
+    end
+end
+
+pub fn show_captured()
+    if host.host_captured_len() <= 0 then
+        ret
+    end
+    var text: String = host.captured_string()
+    var need_nl: i32 = 0
+    if text.byte_len() > 0 then
+        var last: i64 = text.byte_len() - 1
+        if host.host_byte(text.data(), text.byte_len(), last) != 10 then
+            need_nl = 1
+        end
+    end
+    io.eprint(text)
+    if need_nl != 0 then
+        io.eprint("\n")
+    end
+end
+
+pub fn print_summary(ms: i64)
+    io.println("+-- cruftar build --")
+    host.host_buf_clear()
+    host.host_buf_puts("| duration  ".data())
+    host.host_buf_put_i64(ms)
+    host.host_buf_puts(" ms".data())
+    io.println(host.take())
+    host.host_buf_clear()
+    host.host_buf_puts("| target    ".data())
+    if host.host_slot_len(S_TRIPLE) > 0 then
+        host.host_buf_puts_slot(S_TRIPLE)
+    else
+        host.host_buf_puts(host.host_host_triple())
+    end
+    io.println(host.take())
+    host.host_buf_clear()
+    host.host_buf_puts("| output    ".data())
+    host.host_buf_puts_slot(S_OUT)
+    io.println(host.take())
+    host.host_buf_clear()
+    host.host_buf_puts("| size      ".data())
+    host.host_join_cstr(S_ROOT, host.host_slot_ptr(S_OUT), S_PATH)
+    var sz: i64 = host.host_file_size(host.host_slot_ptr(S_PATH))
+    if sz < 0 then
+        host.host_buf_puts("unknown".data())
+    else
+        host.host_buf_put_size(sz)
+    end
+    io.println(host.take())
+    io.println("+-------------------")
+    host.host_flush()
+end

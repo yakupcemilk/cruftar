@@ -1,0 +1,697 @@
+package cli
+
+import host
+import io
+import fs
+
+pub fn cmd_build(): i32
+    if load_project() != 0 then
+        ret 1
+    end
+    if locate() != 0 then
+        ret 1
+    end
+    if collect_sources() != 0 then
+        ret 1
+    end
+    select_opt()
+    if ensure_build_dir() != 0 then
+        ret 1
+    end
+    var need_rust: i32 = want_link()
+    var rust: i32 = ensure_rust(need_rust)
+    if rust != 0 then
+        ret rust
+    end
+    host.host_tick()
+    note_std()
+    show_progress(L_SOURCES)
+    var code: i32 = compile_check(L_SOURCES, "cruft.toml".data())
+    if code != 0 then
+        ret code
+    end
+    code = compile_ir(L_SOURCES, "cruft.toml".data(), 0)
+    if code != 0 then
+        ret code
+    end
+    if g_opt > 0 then
+        code = compile_ir(L_SOURCES, "cruft.toml".data(), g_opt)
+        if code != 0 then
+            ret code
+        end
+    end
+    code = compile_object(L_SOURCES, "cruft.toml".data(), g_opt)
+    if code != 0 then
+        ret code
+    end
+    if want_link() != 0 then
+        code = link_named()
+        if code != 0 then
+            ret code
+        end
+    end
+    print_summary(host.host_tock())
+    ret 0
+end
+
+pub fn cmd_check(): i32
+    if load_project() != 0 then
+        ret 1
+    end
+    if locate() != 0 then
+        ret 1
+    end
+    if collect_sources() != 0 then
+        ret 1
+    end
+    note_std()
+    show_progress(L_SOURCES)
+    var code: i32 = compile_check(L_SOURCES, "cruft.toml".data())
+    if code != 0 then
+        ret code
+    end
+    io.println("check ok")
+    ret 0
+end
+
+pub fn cmd_run(): i32
+    var code: i32 = cmd_build()
+    if code != 0 then
+        ret code
+    end
+    if want_link() == 0 then
+        say_fixed("this target does not produce a host executable")
+        ret 1
+    end
+    host.host_cmd_begin()
+    host.host_cmd_cwd_slot(S_ROOT)
+    host.host_cmd_arg_slot(S_OUT)
+    add_list(L_ARGS)
+    host.host_flush()
+    ret host.host_cmd_run(0)
+end
+
+pub fn cmd_test(): i32
+    if load_project() != 0 then
+        ret 1
+    end
+    if locate() != 0 then
+        ret 1
+    end
+    if collect_sources() != 0 then
+        ret 1
+    end
+    host.host_join_cstr(S_ROOT, "tests".data(), S_PATH)
+    if host.host_is_dir(host.host_slot_ptr(S_PATH)) == 0 then
+        io.println("no tests")
+        ret 0
+    end
+    host.host_walk_suffix(host.host_slot_ptr(S_PATH), ".cruft".data(), L_TESTS)
+    if host.host_list_count(L_TESTS) == 0 then
+        io.println("no tests")
+        ret 0
+    end
+    var rust: i32 = ensure_rust(1)
+    if rust != 0 then
+        ret rust
+    end
+    if ensure_build_dir() != 0 then
+        ret 1
+    end
+    note_std()
+    var failed: i32 = 0
+    var i: i32 = 0
+    var n: i32 = host.host_list_count(L_TESTS)
+    while i < n do
+        if run_one(i) != 0 then
+            failed = failed + 1
+        end
+        i = i + 1
+    end
+    host.host_buf_clear()
+    host.host_buf_put_i32(n - failed)
+    host.host_buf_puts(" passed, ".data())
+    host.host_buf_put_i32(failed)
+    host.host_buf_puts(" failed".data())
+    io.println(host.take())
+    if failed != 0 then
+        ret 1
+    end
+    ret 0
+end
+
+pub fn cmd_clean(): i32
+    host.host_join_cstr(S_ROOT, "build".data(), S_PATH)
+    host.host_remove_tree(host.host_slot_ptr(S_PATH))
+    host.host_delete_artifacts(host.host_slot_ptr(S_ROOT))
+    io.println("removed build artifacts")
+    ret 0
+end
+
+pub fn locate(): i32
+    if host.host_slot_len(S_CRUFTC) == 0 then
+        if host.host_getenv("CRUFTC".data(), S_CRUFTC) == 0 then
+            if host.host_which("cruftc.exe".data(), S_CRUFTC) == 0 then
+                if host.host_which("cruftc".data(), S_CRUFTC) == 0 then
+                    if search_tree(S_ROOT) == 0 then
+                        if host.host_exe_dir(S_SAVED) != 0 then
+                            if search_tree(S_SAVED) == 0 then
+                                ret missing_compiler()
+                            end
+                        else
+                            ret missing_compiler()
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if host.host_is_file(host.host_slot_ptr(S_CRUFTC)) == 0 then
+        ret missing_compiler()
+    end
+    if host.host_getenv("CRUFT_STD".data(), S_STD) == 0 then
+        host.host_slot_copy(S_COMPILER, S_CRUFTC)
+        host.host_slot_parent(S_COMPILER)
+        host.host_slot_parent(S_COMPILER)
+        host.host_join_cstr(S_COMPILER, "std".data(), S_STD)
+        host.host_join_cstr(S_STD, "mem.cruft".data(), S_PATH)
+        if host.host_is_file(host.host_slot_ptr(S_PATH)) == 0 then
+            host.host_slot_clear(S_STD)
+        end
+        host.host_join_cstr(S_COMPILER, "src/runtime".data(), S_RUNTIME)
+    else
+        host.host_slot_copy(S_COMPILER, S_STD)
+        host.host_slot_parent(S_COMPILER)
+        host.host_join_cstr(S_COMPILER, "src/runtime".data(), S_RUNTIME)
+    end
+    if host.host_getenv("CRUFT_RUNTIME".data(), S_TEMP) != 0 then
+        host.host_slot_copy(S_RUNTIME, S_TEMP)
+    end
+    if host.host_getenv("CC".data(), S_CC) == 0 then
+        if host.host_which("gcc".data(), S_CC) == 0 then
+            if host.host_which("clang".data(), S_CC) == 0 then
+                host.host_which("cc".data(), S_CC)
+            end
+        end
+    end
+    if host.host_which("cargo".data(), S_CARGO) == 0 then
+        host.host_slot_clear(S_CARGO)
+    end
+    ret 0
+end
+
+pub fn search_tree(start: i32): i32
+    host.host_slot_copy(S_TEMP, start)
+    var depth: i32 = 0
+    while depth < 8 do
+        if probe_rel(S_TEMP, "build/cruftc.exe".data()) != 0 then
+            ret 1
+        end
+        if probe_rel(S_TEMP, "build/cruftc".data()) != 0 then
+            ret 1
+        end
+        if probe_rel(S_TEMP, "Cruft/build/cruftc.exe".data()) != 0 then
+            ret 1
+        end
+        if host.host_slot_parent(S_TEMP) == 0 then
+            ret 0
+        end
+        depth = depth + 1
+    end
+    ret 0
+end
+
+pub fn probe_rel(base: i32, rel: ptr): i32
+    host.host_join_cstr(base, rel, S_PATH)
+    if host.host_is_file(host.host_slot_ptr(S_PATH)) != 0 then
+        host.host_slot_copy(S_CRUFTC, S_PATH)
+        ret 1
+    end
+    ret 0
+end
+
+pub fn collect_sources(): i32
+    host.host_join_cstr(S_ROOT, "src".data(), S_PATH)
+    if host.host_is_dir(host.host_slot_ptr(S_PATH)) == 0 then
+        say_fixed("src/ was not found")
+        ret 1
+    end
+    host.host_walk_suffix(host.host_slot_ptr(S_PATH), ".cruft".data(), L_SOURCES)
+    if host.host_list_count(L_SOURCES) == 0 then
+        say_fixed("no Cruft sources under src/")
+        ret 1
+    end
+    ret 0
+end
+
+pub fn select_opt()
+    if g_release != 0 then
+        g_opt = host.host_slot_i32(S_RELOPT, 2)
+    else
+        g_opt = host.host_slot_i32(S_DEVOPT, 0)
+    end
+    if g_opt < 0 or g_opt > 3 then
+        g_opt = 0
+    end
+end
+
+pub fn want_link(): i32
+    if host.host_slot_eq(S_KIND, "lib".data()) != 0 then
+        ret 0
+    end
+    if host.host_slot_len(S_TRIPLE) > 0 then
+        ret 0
+    end
+    ret 1
+end
+
+pub fn ensure_build_dir(): i32
+    host.host_join_cstr(S_ROOT, "build".data(), S_PATH)
+    if host.host_mkdirs(host.host_slot_ptr(S_PATH)) == 0 then
+        say_fixed("cannot create build/")
+        ret 1
+    end
+    ret 0
+end
+
+pub fn note_std()
+    if host.host_slot_len(S_STD) == 0 then
+        io.eprint("note: the Cruft standard library was not found. Set CRUFT_STD to the directory that contains mem.cruft\n")
+    end
+end
+
+pub fn show_progress(list: i32)
+    var n: i32 = host.host_list_count(list)
+    if n <= 1 then
+        ret
+    end
+    var i: i32 = 0
+    while i < n do
+        show_one(list, i, n)
+        i = i + 1
+    end
+end
+
+pub fn show_one(list: i32, i: i32, n: i32)
+    host.host_buf_clear()
+    host.host_buf_puts("[".data())
+    var shown: i32 = i + 1
+    host.host_buf_bar(shown, n)
+    host.host_buf_puts("] ".data())
+    host.host_buf_put(host.host_list_ptr(list, i), host.host_list_len(list, i))
+    io.println(host.take())
+    host.host_flush()
+end
+
+pub fn compile_check(list: i32, manifest: ptr): i32
+    begin_cruftc()
+    host.host_cmd_arg_cstr("--check".data())
+    add_common(manifest, 0)
+    add_target()
+    add_list(list)
+    ret run_spin("Resolving module dependencies...".data())
+end
+
+pub fn compile_ir(list: i32, manifest: ptr, opt: i32): i32
+    set_named_out(1)
+    begin_cruftc()
+    host.host_cmd_arg_cstr("-emit-llvm".data())
+    host.host_cmd_arg_cstr("-o".data())
+    host.host_cmd_arg_slot(S_OUT)
+    add_common(manifest, opt)
+    add_target()
+    add_list(list)
+    if opt > 0 then
+        ret run_spin("Optimizing arena frames...".data())
+    end
+    ret run_spin("Lowering to LLVM IR...".data())
+end
+
+pub fn compile_object(list: i32, manifest: ptr, opt: i32): i32
+    set_named_out(2)
+    begin_cruftc()
+    host.host_cmd_arg_cstr("-c".data())
+    host.host_cmd_arg_cstr("-o".data())
+    host.host_cmd_arg_slot(S_OUT)
+    add_common(manifest, opt)
+    add_target()
+    add_list(list)
+    ret run_spin("Optimizing arena frames...".data())
+end
+
+pub fn begin_cruftc()
+    host.host_cmd_begin()
+    host.host_cmd_cwd_slot(S_ROOT)
+    host.host_cmd_arg_slot(S_CRUFTC)
+end
+
+pub fn add_common(manifest: ptr, opt: i32)
+    host.host_cmd_arg_cstr("--manifest".data())
+    host.host_cmd_arg_cstr(manifest)
+    add_opt(opt)
+    if host.host_slot_len(S_STD) > 0 then
+        host.host_cmd_arg_cstr("--lib".data())
+        host.host_cmd_arg_slot(S_STD)
+    end
+end
+
+pub fn add_opt(opt: i32)
+    if opt == 1 then
+        host.host_cmd_arg_cstr("-O1".data())
+    else
+        if opt == 2 then
+            host.host_cmd_arg_cstr("-O2".data())
+        else
+            if opt == 3 then
+                host.host_cmd_arg_cstr("-O3".data())
+            else
+                host.host_cmd_arg_cstr("-O0".data())
+            end
+        end
+    end
+end
+
+pub fn add_target()
+    if host.host_slot_len(S_TRIPLE) > 0 then
+        host.host_cmd_arg_cstr("--target".data())
+        host.host_cmd_arg_slot(S_TRIPLE)
+    end
+end
+
+pub fn add_list(list: i32)
+    var n: i32 = host.host_list_count(list)
+    var i: i32 = 0
+    while i < n do
+        add_item(list, i)
+        i = i + 1
+    end
+end
+
+pub fn add_item(list: i32, i: i32)
+    host.host_cmd_arg(host.host_list_ptr(list, i), host.host_list_len(list, i))
+end
+
+pub fn set_named_out(kind: i32)
+    host.host_buf_clear()
+    host.host_buf_puts("build/".data())
+    host.host_buf_puts_slot(S_NAME)
+    put_kind_suffix(kind)
+    host.host_slot_set(S_OUT, host.host_buf_ptr(), host.host_buf_len())
+    host.host_buf_clear()
+end
+
+pub fn set_stem_out(kind: i32)
+    host.host_buf_clear()
+    host.host_buf_puts("build/".data())
+    host.host_buf_puts_slot(S_TEMP)
+    put_kind_suffix(kind)
+    host.host_slot_set(S_OUT, host.host_buf_ptr(), host.host_buf_len())
+    host.host_buf_clear()
+end
+
+pub fn put_kind_suffix(kind: i32)
+    if kind == 1 then
+        host.host_buf_puts(".ll".data())
+    end
+    if kind == 2 then
+        host.host_buf_puts(".o".data())
+    end
+    if kind == 3 then
+        host.host_buf_puts(host.host_exe_suffix())
+    end
+end
+
+pub fn link_named(): i32
+    host.host_slot_copy(S_SAVED, S_OUT)
+    set_named_out(3)
+    ret link_saved()
+end
+
+pub fn link_saved(): i32
+    if host.host_slot_len(S_CC) == 0 then
+        ret missing_cc()
+    end
+    host.host_cmd_begin()
+    host.host_cmd_cwd_slot(S_ROOT)
+    host.host_cmd_arg_slot(S_CC)
+    host.host_cmd_arg_cstr("-o".data())
+    host.host_cmd_arg_slot(S_OUT)
+    host.host_cmd_arg_slot(S_SAVED)
+    add_c_files()
+    if host.host_slot_len(S_RUSTLIB) > 0 then
+        host.host_cmd_arg_slot(S_RUSTLIB)
+    end
+    add_search_flags()
+    add_lib_flags()
+    ret run_spin("Linking executable...".data())
+end
+
+pub fn add_c_files()
+    host.host_join_cstr(S_ROOT, "src/runtime".data(), S_PATH)
+    if host.host_is_dir(host.host_slot_ptr(S_PATH)) != 0 then
+        host.host_walk_suffix("src/runtime".data(), ".c".data(), L_CFILES)
+    else
+        host.host_list_clear(L_CFILES)
+    end
+    add_runtime_one("arena.c".data())
+    add_runtime_one("mem.c".data())
+    add_runtime_one("fs.c".data())
+    add_runtime_one("io.c".data())
+    add_list(L_CFILES)
+end
+
+pub fn add_runtime_one(name: ptr)
+    if host.host_list_has_basename(L_CFILES, name) != 0 then
+        ret
+    end
+    host.host_join_cstr(S_RUNTIME, name, S_PATH)
+    if host.host_is_file(host.host_slot_ptr(S_PATH)) != 0 then
+        host.host_cmd_arg_slot(S_PATH)
+    end
+end
+
+pub fn add_search_flags()
+    var n: i32 = host.host_list_count(L_SEARCH)
+    var i: i32 = 0
+    while i < n do
+        add_one_search(i)
+        i = i + 1
+    end
+end
+
+pub fn add_one_search(i: i32)
+    host.host_buf_clear()
+    host.host_buf_puts("-L".data())
+    host.host_buf_put(host.host_list_ptr(L_SEARCH, i), host.host_list_len(L_SEARCH, i))
+    host.host_cmd_arg(host.host_buf_ptr(), host.host_buf_len())
+    host.host_buf_clear()
+end
+
+pub fn add_lib_flags()
+    var n: i32 = host.host_list_count(L_LIBS)
+    var i: i32 = 0
+    while i < n do
+        add_one_lib(i)
+        i = i + 1
+    end
+end
+
+pub fn add_one_lib(i: i32)
+    if host.host_slot_len(S_RUSTLIB) > 0 then
+        if host.host_streq(host.host_list_ptr(L_LIBS, i), host.host_list_len(L_LIBS, i), "cruft_bridge".data()) != 0 then
+            ret
+        end
+    end
+    host.host_buf_clear()
+    host.host_buf_puts("-l".data())
+    host.host_buf_put(host.host_list_ptr(L_LIBS, i), host.host_list_len(L_LIBS, i))
+    host.host_cmd_arg(host.host_buf_ptr(), host.host_buf_len())
+    host.host_buf_clear()
+end
+
+pub fn ensure_rust(required: i32): i32
+    if host.host_slot_eq(S_TEMPLATE, "cruft-with-rust".data()) == 0 then
+        host.host_slot_clear(S_RUSTLIB)
+        ret 0
+    end
+    if host.host_slot_len(S_CARGO) == 0 then
+        host.host_slot_clear(S_RUSTLIB)
+        if required != 0 then
+            ret missing_cargo()
+        end
+        io.eprint("note: cargo was not found, so the Rust staticlib was not built\n")
+        ret 0
+    end
+    host.host_cmd_begin()
+    host.host_cmd_cwd_slot(S_ROOT)
+    host.host_cmd_arg_slot(S_CARGO)
+    host.host_cmd_arg_cstr("build".data())
+    host.host_cmd_arg_cstr("--release".data())
+    host.host_cmd_arg_cstr("--manifest-path".data())
+    host.host_cmd_arg_cstr("rust/Cargo.toml".data())
+    io.eprint("Building Rust staticlib...\n")
+    var code: i32 = host.host_cmd_run(1)
+    if code != 0 then
+        show_captured()
+        ret code
+    end
+    if find_rustlib() == 0 then
+        host.host_slot_clear(S_RUSTLIB)
+        if required != 0 then
+            say_fixed("cargo finished but libcruft_bridge was not found under rust/target/release")
+            ret 1
+        end
+    end
+    ret 0
+end
+
+pub fn find_rustlib(): i32
+    if try_lib("rust/target/release/libcruft_bridge.a".data()) != 0 then
+        ret 1
+    end
+    if try_lib("rust/target/release/cruft_bridge.lib".data()) != 0 then
+        ret 1
+    end
+    if try_lib("rust/target/release/libcruft_bridge.lib".data()) != 0 then
+        ret 1
+    end
+    if try_lib("rust/target/release/cruft_bridge.a".data()) != 0 then
+        ret 1
+    end
+    ret 0
+end
+
+pub fn try_lib(rel: ptr): i32
+    host.host_join_cstr(S_ROOT, rel, S_PATH)
+    if host.host_is_file(host.host_slot_ptr(S_PATH)) != 0 then
+        host.host_slot_copy(S_RUSTLIB, S_PATH)
+        ret 1
+    end
+    ret 0
+end
+
+pub fn run_spin(msg: ptr): i32
+    host.host_flush()
+    host.host_spin_start(msg)
+    var code: i32 = host.host_cmd_run(1)
+    host.host_spin_stop()
+    if code != 0 then
+        show_captured()
+        if host.host_captured_len() == 0 then
+            host.host_buf_clear()
+            host.host_buf_puts("error: command exited with code ".data())
+            host.host_buf_put_i32(code)
+            host.host_buf_puts("\n".data())
+            io.eprint(host.take())
+        end
+    end
+    ret code
+end
+
+pub fn run_one(index: i32): i32
+    host.host_stem(host.host_list_ptr(L_TESTS, index), host.host_list_len(L_TESTS, index), S_TEMP)
+    host.host_buf_clear()
+    host.host_buf_puts("test ".data())
+    host.host_buf_put(host.host_list_ptr(L_TESTS, index), host.host_list_len(L_TESTS, index))
+    io.println(host.take())
+    hold_triple()
+    collect_test_inputs(index)
+    if prepare_test_manifest() != 0 then
+        restore_triple()
+        ret 1
+    end
+    var code: i32 = compile_check(L_COMPILE, host.host_slot_ptr(S_MANIFEST))
+    if code == 0 then
+        code = compile_stem(L_COMPILE, host.host_slot_ptr(S_MANIFEST))
+    end
+    if code == 0 then
+        code = link_stem()
+    end
+    if code == 0 then
+        host.host_cmd_begin()
+        host.host_cmd_cwd_slot(S_ROOT)
+        host.host_cmd_arg_slot(S_OUT)
+        code = host.host_cmd_run(0)
+    end
+    restore_triple()
+    if code == 0 then
+        io.println("ok")
+    else
+        io.println("fail")
+    end
+    host.host_flush()
+    ret code
+end
+
+pub fn hold_triple()
+    host.host_slot_clear(S_HOLD)
+    if host.host_slot_len(S_TRIPLE) > 0 then
+        host.host_slot_copy(S_HOLD, S_TRIPLE)
+        host.host_slot_clear(S_TRIPLE)
+    end
+end
+
+pub fn restore_triple()
+    if host.host_slot_len(S_HOLD) > 0 then
+        host.host_slot_copy(S_TRIPLE, S_HOLD)
+        host.host_slot_clear(S_HOLD)
+    end
+end
+
+pub fn prepare_test_manifest(): i32
+    if host.host_slot_len(S_HOLD) == 0 then
+        host.host_slot_set_cstr(S_MANIFEST, "cruft.toml".data())
+        ret 0
+    end
+    host.host_join_cstr(S_ROOT, "build/host.toml".data(), S_PATH)
+    if write_manifest_slot(S_PATH) != 0 then
+        ret 1
+    end
+    host.host_slot_set_cstr(S_MANIFEST, "build/host.toml".data())
+    ret 0
+end
+
+pub fn compile_stem(list: i32, manifest: ptr): i32
+    set_stem_out(2)
+    begin_cruftc()
+    host.host_cmd_arg_cstr("-c".data())
+    host.host_cmd_arg_cstr("-o".data())
+    host.host_cmd_arg_slot(S_OUT)
+    add_common(manifest, 0)
+    add_list(list)
+    ret run_spin("Lowering to LLVM IR...".data())
+end
+
+pub fn link_stem(): i32
+    host.host_slot_copy(S_SAVED, S_OUT)
+    set_stem_out(3)
+    ret link_saved()
+end
+
+pub fn collect_test_inputs(index: i32)
+    host.host_list_clear(L_COMPILE)
+    host.host_list_add(L_COMPILE, host.host_list_ptr(L_TESTS, index), host.host_list_len(L_TESTS, index))
+    var n: i32 = host.host_list_count(L_SOURCES)
+    var i: i32 = 0
+    while i < n do
+        consider_src(i)
+        i = i + 1
+    end
+end
+
+pub fn consider_src(i: i32)
+    if file_has_main(i) == 0 then
+        host.host_list_add(L_COMPILE, host.host_list_ptr(L_SOURCES, i), host.host_list_len(L_SOURCES, i))
+    end
+end
+
+pub fn file_has_main(i: i32): i32
+    host.host_slot_set(S_PATH, host.host_list_ptr(L_SOURCES, i), host.host_list_len(L_SOURCES, i))
+    host.host_join_cstr(S_ROOT, host.host_slot_ptr(S_PATH), S_OUT)
+    var path: String = host.slot_string(S_OUT)
+    var text: String = fs.read_to_string(path)
+    if host.host_has_entry(text.data(), text.byte_len()) != 0 then
+        ret 1
+    end
+    ret 0
+end
